@@ -130,7 +130,11 @@ if __name__ == '__main__':
             output = model(data).to(device=device)
             batch_loss = criterion(output, data).to(device=device)
             batch_loss.backward()
+            #for name, param in model.named_parameters():
+            #    print("GRADIENT",name,param.grad)
             optimizer.step()
+            #for name, param in model.named_parameters():
+            #    print("WEIGHT",name,param)
             train_loss+=batch_loss.item()
             del data
             del output
