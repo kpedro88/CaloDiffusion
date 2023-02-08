@@ -2,6 +2,30 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+# from https://github.com/sprillo/softsort
+# (S. Prillo, J. M. Eisenschlos, "SoftSort: A Continuous Relaxation for the argsort Operator", https://arxiv.org/abs/2006.16038, ICML 2020)
+class SoftSort(torch.nn.Module):
+    def __init__(self, tau=1.0, hard=False, pow=1.0):
+        super(SoftSort, self).__init__()
+        self.hard = hard
+        self.tau = tau
+        self.pow = pow
+
+    def forward(self, scores: torch.Tensor):
+        """
+        scores: elements to be sorted. Typical shape: batch_size x n
+        """
+        scores = scores.unsqueeze(-1)
+        sorted = scores.sort(descending=True, dim=1)[0]
+        pairwise_diff = (scores.transpose(1, 2) - sorted).abs().pow(self.pow).neg() / self.tau
+        P_hat = pairwise_diff.softmax(-1)
+
+        if self.hard:
+            P = torch.zeros_like(P_hat, device=P_hat.device)
+            P.scatter_(-1, P_hat.topk(1, -1)[1], value=1)
+            P_hat = (P - P_hat).detach() + P_hat
+        return P_hat
+
 # geometry generalization layer
 class GeGeLayer(nn.Module):
     def __init__(self, in_shape, out_shape):
@@ -13,6 +37,7 @@ class GeGeLayer(nn.Module):
         self.out_size = np.prod(self.out_shape)
         assert self.out_size>=self.in_size, "out_size {} ({}) less than in_size {} ({})".format(self.out_size, self.out_shape, self.in_size, self.in_shape)
         self.padding = self.out_size - self.in_size
+        self.sort = SoftSort() # todo: configurable hyperparams
         self.hidden = None
 
     def set_hidden(self, hidden):
@@ -25,21 +50,22 @@ class GeGeLayer(nn.Module):
         x = nn.functional.pad(x, pad = (0, self.padding))
         # apply hidden layers to get score vector
         score = self.hidden(x)
-        # sort inputs by score
-        _, indices = torch.sort(score)
-        x = torch.take(x, indices)
+        # "sort" inputs by score: produces NxN matrix of probabilities for each input cell to move to each output cell
+        probs = self.sort(score.squeeze())
+        # "apply" the sort: sum up input cells in proportion to their probability to be in a given output cell
+        x = torch.matmul(x,probs)
         # reshape to new geometry
         x = torch.reshape(x, [x.size()[0], x.size()[1]] + self.out_shape)
-        # get indices to reverse sort later
-        _, reverse_indices = torch.sort(indices)
-        return x, reverse_indices
+        # "reverse" the "sort" by inverting the probability matrix
+        probs = torch.inverse(probs)
+        return x, probs
 
     # starting from new geometry, restore original order, size, shape
-    def restore(self, x, indices):
+    def restore(self, x, probs):
         restore_shape = [x.size()[0], x.size()[1]] + self.in_shape[1:]
         x = torch.reshape(x, (x.size()[0], x.size()[1], self.out_size))
         x = torch.narrow(x, x.dim()-1, 0, self.in_size)
-        x = torch.take(x, indices)
+        x = torch.matmul(x, probs)
         x = torch.reshape(x, restore_shape)
         return x
 
@@ -51,9 +77,10 @@ class GeGeWrapper(nn.Module):
         self.model = model
 
     def forward(self, x):
-        x, reverse_indices = self.geom_layer(x)
+        x, probs = self.geom_layer(x)
         x = self.model(x)
-        x = self.geom_layer.restore(x, reverse_indices)
+        x = self.geom_layer.restore(x, probs)
+        del probs
         return x
 
 def make_GeGeModel(model, in_shape, out_shape, hidden_layer_sizes, hidden_act):
