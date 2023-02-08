@@ -72,12 +72,14 @@ if __name__ == '__main__':
             data = data_
             energies = e_
         else:
+            if data.shape[0] >= args.nevts: break
             data = np.concatenate((data, data_))
             energies = np.concatenate((energies, e_))
 
     data = np.reshape(data,args.shape_pad)
     data_size = data.shape[0]
     train_data, val_data = utils.split_data_np(data,args.frac)
+    print(train_data.shape,val_data.shape,sep='\n')
 
     train_data_tensor = torch.from_numpy(train_data)
     #train_dataset = torchdata.TensorDataset(train_data_tensor)
@@ -153,7 +155,7 @@ if __name__ == '__main__':
             del vdata
             del output
             del output_loss
-        val_loss = val_loss/len(loader_val)
+        val_loss = val_loss/max(1,len(loader_val))
         scheduler.step(torch.tensor([val_loss]))
         val_losses[epoch] = val_loss
         print("val_loss: "+ str(val_loss))
