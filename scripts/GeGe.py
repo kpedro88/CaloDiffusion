@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# from https://github.com/sprillo/softsort
+# based on https://github.com/sprillo/softsort
 # (S. Prillo, J. M. Eisenschlos, "SoftSort: A Continuous Relaxation for the argsort Operator", https://arxiv.org/abs/2006.16038, ICML 2020)
+# with differentiable implementation of "hard" option: calculates orthonormal matrix from "soft" scores using only operations w/ gradients
 class SoftSort(torch.nn.Module):
     def __init__(self, tau=1.0, hard=False, pow=1.0):
-        super(SoftSort, self).__init__()
+        super().__init__()
         self.hard = hard
         self.tau = tau
         self.pow = pow
@@ -21,9 +22,10 @@ class SoftSort(torch.nn.Module):
         P_hat = pairwise_diff.softmax(-1)
 
         if self.hard:
-            P = torch.zeros_like(P_hat, device=P_hat.device)
-            P.scatter_(-1, P_hat.topk(1, -1)[1], value=1)
-            P_hat = (P - P_hat).detach() + P_hat
+            # all values less than max go below zero, then send negatives to zero w/ ReLU
+            P = torch.nn.functional.relu(P_hat - torch.mean(P_hat.topk(2,-1)[0],-1))
+            # normalize
+            P_hat = torch.divide(P, P.topk(1,-1)[0])
         return P_hat
 
 # geometry generalization layer
