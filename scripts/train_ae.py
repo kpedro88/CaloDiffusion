@@ -79,7 +79,6 @@ if __name__ == '__main__':
     data = np.reshape(data,args.shape_pad)
     data_size = data.shape[0]
     train_data, val_data = utils.split_data_np(data,args.frac)
-    print(train_data.shape,val_data.shape,sep='\n')
 
     train_data_tensor = torch.from_numpy(train_data)
     #train_dataset = torchdata.TensorDataset(train_data_tensor)

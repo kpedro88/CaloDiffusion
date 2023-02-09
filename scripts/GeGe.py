@@ -4,11 +4,11 @@ import numpy as np
 
 # based on https://github.com/sprillo/softsort
 # (S. Prillo, J. M. Eisenschlos, "SoftSort: A Continuous Relaxation for the argsort Operator", https://arxiv.org/abs/2006.16038, ICML 2020)
-# with differentiable implementation of "hard" option: calculates orthonormal matrix from "soft" scores using only operations w/ gradients
-class SoftSort(torch.nn.Module):
-    def __init__(self, tau=1.0, hard=False, pow=1.0):
+# differentiable exact sort: calculates orthonormal matrix from "soft" scores using only operations w/ gradients
+class HardSort(torch.nn.Module):
+    def __init__(self, tau=1.0, pow=1.0):
         super().__init__()
-        self.hard = hard
+        # do these hyperparameters matter in practice?
         self.tau = tau
         self.pow = pow
 
@@ -16,16 +16,22 @@ class SoftSort(torch.nn.Module):
         """
         scores: elements to be sorted. Typical shape: batch_size x n
         """
-        scores = scores.unsqueeze(-1)
         sorted = scores.sort(descending=True, dim=1)[0]
-        pairwise_diff = (scores.transpose(1, 2) - sorted).abs().pow(self.pow).neg() / self.tau
-        P_hat = pairwise_diff.softmax(-1)
-
-        if self.hard:
+        P_hat = None
+        # build up a sparse representation of pairwise_diff without realizing full NxN dense matrix in memory
+        for row in range(sorted.size()[1]):
+            pairwise_diff = (scores - sorted[:,row].unsqueeze(-1)).unsqueeze(-2).abs().pow(self.pow).neg() / self.tau
+            P_tmp = pairwise_diff.softmax(-1)
             # all values less than max go below zero, then send negatives to zero w/ ReLU
-            P = torch.nn.functional.relu(P_hat - torch.mean(P_hat.topk(2,-1)[0],-1))
+            P_tmp = nn.functional.relu(P_tmp - torch.mean(P_tmp.topk(2,-1)[0],-1).unsqueeze(-1))
             # normalize
-            P_hat = torch.divide(P, P.topk(1,-1)[0])
+            P_tmp = torch.divide(P_tmp, P_tmp.topk(1,-1)[0])
+            # sparsify
+            P_tmp = P_tmp.to_sparse()
+            # concatenate
+            if P_hat is None: P_hat = P_tmp
+            else: P_hat = torch.cat([P_hat,P_tmp], dim=-2)
+
         return P_hat
 
 # geometry generalization layer
@@ -39,7 +45,7 @@ class GeGeLayer(nn.Module):
         self.out_size = np.prod(self.out_shape)
         assert self.out_size>=self.in_size, "out_size {} ({}) less than in_size {} ({})".format(self.out_size, self.out_shape, self.in_size, self.in_shape)
         self.padding = self.out_size - self.in_size
-        self.sort = SoftSort(hard=True) # todo: configurable hyperparams
+        self.sort = HardSort() # todo: configurable hyperparams?
         self.hidden = None
 
     def set_hidden(self, hidden):
@@ -52,14 +58,14 @@ class GeGeLayer(nn.Module):
         x = nn.functional.pad(x, pad = (0, self.padding))
         # apply hidden layers to get score vector
         score = self.hidden(x)
-        # "sort" inputs by score: produces NxN matrix of probabilities for each input cell to move to each output cell
+        # "sort" inputs by score: produces NxN matrix of probabilities (1 or 0 w/ hard sort) for each input cell to move to each output cell
         probs = self.sort(score.squeeze())
-        # "apply" the sort: sum up input cells in proportion to their probability to be in a given output cell
-        x = torch.matmul(x,probs)
+        # "apply" the sort: sum up input cells in proportion to their probability (1 or 0 w/ hard sort) to be in a given output cell
+        x = torch.bmm(probs, x.transpose(1,2)).transpose(1,2)
         # reshape to new geometry
         x = torch.reshape(x, [x.size()[0], x.size()[1]] + self.out_shape)
         # "reverse" the "sort" by inverting the probability matrix
-        # with "hard" enabled, matrix is orthogonal, so inverse = transpose
+        # hard sort: matrix is orthogonal, so inverse = transpose
         probs = torch.transpose(probs, probs.dim()-1, probs.dim()-2)
         return x, probs
 
@@ -68,7 +74,7 @@ class GeGeLayer(nn.Module):
         restore_shape = [x.size()[0], x.size()[1]] + self.in_shape[1:]
         x = torch.reshape(x, (x.size()[0], x.size()[1], self.out_size))
         x = torch.narrow(x, x.dim()-1, 0, self.in_size)
-        x = torch.matmul(x, probs)
+        x = torch.bmm(probs, x.transpose(1,2)).transpose(1,2)
         x = torch.reshape(x, restore_shape)
         return x
 
