@@ -34,8 +34,8 @@ class HardSort(torch.nn.Module):
 
         return P_hat
 
-def loop_bmm(a,b):
-    return torch.stack([torch.sparse.mm(ai,bi) for ai, bi in zip(a, b)])
+def loop_bmm_dense(a,b):
+    return torch.stack([torch.mm(ai.to_dense(),bi) for ai, bi in zip(a, b)])
 
 # geometry generalization layer
 class GeGeLayer(nn.Module):
@@ -64,7 +64,7 @@ class GeGeLayer(nn.Module):
         # "sort" inputs by score: produces NxN matrix of probabilities (1 or 0 w/ hard sort) for each input cell to move to each output cell
         probs = self.sort(score.squeeze())
         # "apply" the sort: sum up input cells in proportion to their probability (1 or 0 w/ hard sort) to be in a given output cell
-        x = loop_bmm(probs, x.transpose(1,2)).transpose(1,2)
+        x = loop_bmm_dense(probs, x.transpose(1,2)).transpose(1,2)
         # reshape to new geometry
         x = torch.reshape(x, [x.size()[0], x.size()[1]] + self.out_shape)
         # "reverse" the "sort" by inverting the probability matrix
@@ -77,7 +77,7 @@ class GeGeLayer(nn.Module):
         restore_shape = [x.size()[0], x.size()[1]] + self.in_shape[1:]
         x = torch.reshape(x, (x.size()[0], x.size()[1], self.out_size))
         x = torch.narrow(x, x.dim()-1, 0, self.in_size)
-        x = loop_bmm(probs, x.transpose(1,2)).transpose(1,2)
+        x = loop_bmm_dense(probs, x.transpose(1,2)).transpose(1,2)
         x = torch.reshape(x, restore_shape)
         return x
 
