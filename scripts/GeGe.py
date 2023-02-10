@@ -20,8 +20,7 @@ class HardSort(torch.nn.Module):
         P_hat = None
         # build up a sparse representation of pairwise_diff without realizing full NxN dense matrix in memory
         for row in range(sorted.size()[1]):
-            pairwise_diff = (scores - sorted[:,row].unsqueeze(-1)).unsqueeze(-2).abs().pow(self.pow).neg() / self.tau
-            P_tmp = pairwise_diff.softmax(-1)
+            P_tmp = (scores - sorted[:,row].unsqueeze(-1)).unsqueeze(-2).abs().pow(self.pow).neg() / self.tau
             # all values less than max go below zero, then send negatives to zero w/ ReLU
             P_tmp = nn.functional.relu(P_tmp - torch.mean(P_tmp.topk(2,-1)[0],-1).unsqueeze(-1))
             # normalize
